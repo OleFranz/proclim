@@ -1,0 +1,4 @@
+.vscode/settings.json
+/build
+/lib/*.lib
+/include/*.h
