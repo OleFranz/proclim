@@ -10,6 +10,9 @@
 
 #include "error.h"
 
+#define MAX_PACKET_SIZE 0xFFFF
+
+
 struct FlowKey {
     uint32_t src_addr;
     uint16_t src_port;
@@ -41,8 +44,9 @@ static std::unordered_map<FlowKey, DWORD, FlowKeyHash> flow_to_pid;
 static std::mutex map_mutex;
 
 
-void FlowLayerListener()
-{
+void FlowLayerListener() {
+    WINDIVERT_ADDRESS addr;
+
     HANDLE flow_handle = WinDivertOpen(
         "true", // capture all
         WINDIVERT_LAYER_FLOW,
@@ -54,7 +58,6 @@ void FlowLayerListener()
         return;
     }
 
-    WINDIVERT_ADDRESS addr;
     while (true)
     {
         if (!WinDivertRecv(flow_handle, nullptr, 0, nullptr, &addr)) {
@@ -82,8 +85,11 @@ void FlowLayerListener()
 }
 
 
-void NetworkLayerListener()
-{
+void NetworkLayerListener() {
+    char packet[MAX_PACKET_SIZE];
+    UINT packet_len;
+    WINDIVERT_ADDRESS addr;
+
     HANDLE network_handle = WinDivertOpen(
         "ip and tcp",
         WINDIVERT_LAYER_NETWORK,
@@ -95,10 +101,6 @@ void NetworkLayerListener()
         return;
     }
 
-    char packet[0xFFFF];
-    UINT packet_len;
-    WINDIVERT_ADDRESS addr;
-
     while (true) {
         if (!WinDivertRecv(network_handle, packet, sizeof(packet), &packet_len, &addr)) {
             fprintf(stderr, "WinDivertRecv(network) failed: %s\n", recv_error_to_string(GetLastError()).c_str());
@@ -108,12 +110,19 @@ void NetworkLayerListener()
         PWINDIVERT_IPHDR  iphdr;
         PWINDIVERT_TCPHDR tcphdr;
         WinDivertHelperParsePacket(
-            packet, packet_len,
-            &iphdr, nullptr, nullptr,
-            nullptr, nullptr,
-            &tcphdr, nullptr,
-            nullptr, nullptr,
-            nullptr, nullptr
+            packet,
+            packet_len,
+            &iphdr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            &tcphdr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr
         );
         if (!iphdr || !tcphdr) {
             // not IPv4/TCP
@@ -137,7 +146,7 @@ void NetworkLayerListener()
         }
 
         if (pid == 1) {
-            // do something
+            // ...
         }
 
         WinDivertSend(network_handle, packet, packet_len, nullptr, &addr);
@@ -151,7 +160,6 @@ int main()
     std::thread sockThr(FlowLayerListener);
     std::thread netThr(NetworkLayerListener);
 
-    puts("Running. Ctrl+C to quit.");
     sockThr.join();
     netThr.join();
     return 0;

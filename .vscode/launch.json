@@ -5,7 +5,7 @@
             "name": "(Windows) Launch",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/x64-debug/Debug/ProcessLimiter.exe",
+            "program": "${workspaceFolder}/build/x64-debug/Debug/proclim.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
