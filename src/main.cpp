@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <windows.h>
 #include <cstdint>
+#include <psapi.h>
 #include <cstdio>
 #include <thread>
 #include <mutex>
@@ -11,6 +12,9 @@
 #include "error.h"
 
 #define MAX_PACKET_SIZE 0xFFFF
+
+// windivert.h does not include this for some reason...
+#define IPPROTO_ICMPV6 58
 
 
 struct FlowKey {
@@ -91,7 +95,7 @@ void NetworkLayerListener() {
     WINDIVERT_ADDRESS addr;
 
     HANDLE network_handle = WinDivertOpen(
-        "ip and tcp",
+        "ip or ipv6",
         WINDIVERT_LAYER_NETWORK,
         0,
         0
@@ -107,35 +111,66 @@ void NetworkLayerListener() {
             continue;
         }
 
-        PWINDIVERT_IPHDR  iphdr;
-        PWINDIVERT_TCPHDR tcphdr;
+        PWINDIVERT_IPHDR   iphdr = nullptr;
+        PWINDIVERT_IPV6HDR ipv6hdr = nullptr;
+        PWINDIVERT_TCPHDR  tcphdr = nullptr;
+        PWINDIVERT_UDPHDR  udphdr = nullptr;
+
         WinDivertHelperParsePacket(
             packet,
             packet_len,
             &iphdr,
-            nullptr,
+            &ipv6hdr,
             nullptr,
             nullptr,
             nullptr,
             &tcphdr,
-            nullptr,
+            &udphdr,
             nullptr,
             nullptr,
             nullptr,
             nullptr
         );
-        if (!iphdr || !tcphdr) {
-            // not IPv4/TCP
-            WinDivertSend(network_handle, packet, packet_len, nullptr, &addr);
+
+        if (!iphdr && !ipv6hdr) {
+            // not IPv4/IPv6
+            if (!WinDivertSend(network_handle, packet, packet_len, nullptr, &addr)) {
+                fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
+            }
             continue;
         }
 
         FlowKey key;
-        key.src_addr = WinDivertHelperNtohl(iphdr->SrcAddr);
-        key.src_port = WinDivertHelperNtohs(tcphdr->SrcPort);
-        key.dst_addr = WinDivertHelperNtohl(iphdr->DstAddr);
-        key.dst_port = WinDivertHelperNtohs(tcphdr->DstPort);
-        key.proto    = iphdr->Protocol;
+        if (iphdr) {
+            key.src_addr = WinDivertHelperNtohl(iphdr->SrcAddr);
+            key.dst_addr = WinDivertHelperNtohl(iphdr->DstAddr);
+            key.proto = iphdr->Protocol;
+        } else {
+            key.src_addr = WinDivertHelperNtohl(ipv6hdr->SrcAddr[3]);
+            key.dst_addr = WinDivertHelperNtohl(ipv6hdr->DstAddr[3]);
+            key.proto = ipv6hdr->NextHdr;
+        }
+
+        // Get ports if TCP/UDP, otherwise use 0
+        if (tcphdr) {
+            key.src_port = WinDivertHelperNtohs(tcphdr->SrcPort);
+            key.dst_port = WinDivertHelperNtohs(tcphdr->DstPort);
+        } else if (udphdr) {
+            key.src_port = WinDivertHelperNtohs(udphdr->SrcPort);
+            key.dst_port = WinDivertHelperNtohs(udphdr->DstPort);
+        } else {
+            key.src_port = 0;
+            key.dst_port = 0;
+        }
+
+        const char* proto_str;
+        switch(key.proto) {
+            case IPPROTO_TCP: proto_str = "TCP"; break;
+            case IPPROTO_UDP: proto_str = "UDP"; break;
+            case IPPROTO_ICMP: proto_str = "ICMP"; break;
+            case IPPROTO_ICMPV6: proto_str = "ICMPV6"; break;
+            default: proto_str = "UNKNOWN"; break;
+        }
 
         DWORD pid = -1;
         {
@@ -145,11 +180,37 @@ void NetworkLayerListener() {
                 pid = it->second;
         }
 
-        if (pid == 1) {
-            // ...
+
+        const char* ip_ver = iphdr ? "IPv4" : "IPv6";
+        const char* executable = "Unknown";
+
+        if (pid == 4) {
+            executable = "Windows";
+        } else if (pid != -1) {
+            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (process) {
+                char name[MAX_PATH];
+                DWORD size = MAX_PATH;
+                if (QueryFullProcessImageName(process, 0, name, &size)) {
+                    executable = strrchr(name, '\\') + 1; // only keep file name
+                }
+                CloseHandle(process);
+            }
         }
 
-        WinDivertSend(network_handle, packet, packet_len, nullptr, &addr);
+        printf(
+            "[%s-%s] %s (%d) %d bytes\n",
+            ip_ver,
+            proto_str,
+            executable,
+            pid,
+            packet_len
+        );
+
+
+        if (!WinDivertSend(network_handle, packet, packet_len, nullptr, &addr)) {
+            fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
+        }
     }
 
     WinDivertClose(network_handle);
