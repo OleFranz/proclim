@@ -34,6 +34,11 @@ struct FlowKey {
     }
 };
 
+struct FlowInfo {
+    DWORD pid;
+    std::chrono::steady_clock::time_point last_seen;
+};
+
 struct FlowKeyHash {
     size_t operator()(FlowKey const& k) const noexcept {
         return (size_t)k.proto
@@ -67,7 +72,7 @@ struct FragmentKeyHash {
 };
 
 
-static std::unordered_map<FlowKey, DWORD, FlowKeyHash> flow_to_pid;
+static std::unordered_map<FlowKey, FlowInfo, FlowKeyHash> flow_to_pid;
 static std::mutex map_mutex;
 
 static std::unordered_map<FragmentKey, std::vector<uint8_t>, FragmentKeyHash> frag_buf;
@@ -103,7 +108,7 @@ void FlowLayerListener() {
         flow_key.proto = (uint8_t)addr.Flow.Protocol;
 
         std::lock_guard<std::mutex> lk(map_mutex);
-        flow_to_pid[flow_key] = addr.Flow.ProcessId;
+        flow_to_pid[flow_key] = {addr.Flow.ProcessId, std::chrono::steady_clock::now()};
     }
 
     WinDivertClose(flow_handle);
@@ -216,15 +221,28 @@ void NetworkLayerListener() {
                         flow_key.src_port = 0;
                         flow_key.dst_port = 0;
                     }
+
                     DWORD pid = -1;
                     {
                         std::lock_guard<std::mutex> lk2(map_mutex);
                         auto it = flow_to_pid.find(flow_key);
                         if (it != flow_to_pid.end()) {
-                            pid = it->second;
+                            pid = it->second.pid;
+                            flow_to_pid[flow_key].last_seen = std::chrono::steady_clock::now();
+                        } else {
+                            FlowKey reverse_key = flow_key;
+                            reverse_key.src_addr = flow_key.dst_addr;
+                            reverse_key.dst_addr = flow_key.src_addr;
+                            reverse_key.src_port = flow_key.dst_port;
+                            reverse_key.dst_port = flow_key.src_port;
+
+                            auto reverse_it = flow_to_pid.find(reverse_key);
+                            if (reverse_it != flow_to_pid.end()) {
+                                pid = reverse_it->second.pid;
+                                flow_to_pid[reverse_key].last_seen = std::chrono::steady_clock::now();
+                            }
                         }
                     }
-
 
                     frag_buf.erase(fragment_key);
                     frag_len.erase(fragment_key);
@@ -276,13 +294,25 @@ void NetworkLayerListener() {
             flow_key.dst_port = 0;
         }
 
-
         DWORD pid = -1;
         {
             std::lock_guard<std::mutex> lk(map_mutex);
             auto it = flow_to_pid.find(flow_key);
             if (it != flow_to_pid.end()) {
-                pid = it->second;
+                pid = it->second.pid;
+                flow_to_pid[flow_key].last_seen = std::chrono::steady_clock::now();
+            } else {
+                FlowKey reverse_key = flow_key;
+                reverse_key.src_addr = flow_key.dst_addr;
+                reverse_key.dst_addr = flow_key.src_addr;
+                reverse_key.src_port = flow_key.dst_port;
+                reverse_key.dst_port = flow_key.src_port;
+                
+                auto reverse_it = flow_to_pid.find(reverse_key);
+                if (reverse_it != flow_to_pid.end()) {
+                    pid = reverse_it->second.pid;
+                    flow_to_pid[reverse_key].last_seen = std::chrono::steady_clock::now();
+                }
             }
         }
 
@@ -325,6 +355,21 @@ void NetworkLayerListener() {
 
         if (!WinDivertSend(network_handle, packet, packet_len, nullptr, &addr)) {
             fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
+        }
+
+
+        {
+            std::lock_guard<std::mutex> lk(map_mutex);
+            auto now = std::chrono::steady_clock::now();
+            auto it = flow_to_pid.begin();
+            while (it != flow_to_pid.end()) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.last_seen);
+                if (elapsed.count() > 30) {
+                    it = flow_to_pid.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
     }
 
