@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "(Windows) Launch",
+            "name": "Debug proclim",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/x64-debug/Debug/proclim.exe",
@@ -11,7 +11,7 @@
             "cwd": "${fileDirname}",
             "environment": [],
             "console": "integratedTerminal",
-            "preLaunchTask": "build debug"
+            "preLaunchTask": "Build Debug"
         }
 
     ]
