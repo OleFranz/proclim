@@ -86,14 +86,33 @@ void flow_layer_listener() {
         }
 
         FlowKey flow_key;
-        flow_key.src_addr = addr.Flow.LocalAddr[0];
-        flow_key.src_port = (uint16_t)addr.Flow.LocalPort;
-        flow_key.dst_addr = addr.Flow.RemoteAddr[0];
-        flow_key.dst_port = (uint16_t)addr.Flow.RemotePort;
-        flow_key.proto = (uint8_t)addr.Flow.Protocol;
-
-        std::lock_guard<std::mutex> lk(map_mutex);
-        flow_to_pid[flow_key] = {addr.Flow.ProcessId, std::chrono::steady_clock::now()};
+        switch (addr.Event) {
+            case WINDIVERT_EVENT_FLOW_ESTABLISHED:
+                flow_key.src_addr = addr.Flow.LocalAddr[0];
+                flow_key.src_port = (uint16_t)addr.Flow.LocalPort;
+                flow_key.dst_addr = addr.Flow.RemoteAddr[0];
+                flow_key.dst_port = (uint16_t)addr.Flow.RemotePort;
+                flow_key.proto = (uint8_t)addr.Flow.Protocol;
+                {
+                    std::lock_guard<std::mutex> lk(map_mutex);
+                    flow_to_pid[flow_key] = {addr.Flow.ProcessId, std::chrono::steady_clock::now()};
+                }
+                break;
+            case WINDIVERT_EVENT_FLOW_DELETED:
+                flow_key.src_addr = addr.Flow.LocalAddr[0];
+                flow_key.src_port = (uint16_t)addr.Flow.LocalPort;
+                flow_key.dst_addr = addr.Flow.RemoteAddr[0];
+                flow_key.dst_port = (uint16_t)addr.Flow.RemotePort;
+                flow_key.proto = (uint8_t)addr.Flow.Protocol;
+                {
+                    std::lock_guard<std::mutex> lk(map_mutex);
+                    auto it = flow_to_pid.find(flow_key);
+                    if (it != flow_to_pid.end()) {
+                        flow_to_pid.erase(flow_key);
+                    }
+                }
+                break;
+        }
     }
 
     WinDivertClose(flow_handle);
@@ -126,12 +145,19 @@ void network_layer_listener() {
         PWINDIVERT_IPV6HDR ipv6hdr = nullptr;
 
         WinDivertHelperParsePacket(
-            packet, packet_len,
-            &iphdr, &ipv6hdr,
-            nullptr, nullptr, nullptr,
-            nullptr, nullptr,
-            nullptr, nullptr,
-            nullptr, nullptr
+            packet,
+            packet_len,
+            &iphdr,
+            &ipv6hdr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr
         );
 
         bool is_fragment = false;
@@ -303,21 +329,6 @@ void network_layer_listener() {
 
 
         const char* ip_ver = iphdr ? "IPv4" : "IPv6";
-        const char* executable = "Unknown";
-
-        if (pid == 4) {
-            executable = "Windows";
-        } else if (pid != -1) {
-            HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-            if (process) {
-                char name[MAX_PATH];
-                DWORD size = MAX_PATH;
-                if (QueryFullProcessImageName(process, 0, name, &size)) {
-                    executable = strrchr(name, '\\') + 1; // only keep file name
-                }
-                CloseHandle(process);
-            }
-        }
 
         const char* proto_str;
         switch (flow_key.proto) {
@@ -328,8 +339,15 @@ void network_layer_listener() {
             default: proto_str = "UNKNOWN"; break;
         }
 
+        auto executable = pid_to_executable(pid);
+
         printf(
-            "[%s-%s] %s (%d) %u bytes\n",
+            "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes\n",
+            flow_to_pid.size(),
+            ipv4_to_string((UINT32)flow_key.src_addr),
+            flow_key.src_port,
+            ipv4_to_string((UINT32)flow_key.dst_addr),
+            flow_key.dst_port,
             ip_ver,
             proto_str,
             executable,
@@ -337,24 +355,8 @@ void network_layer_listener() {
             packet_len
         );
 
-
         if (!WinDivertSend(network_handle, packet, packet_len, nullptr, &addr)) {
             fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
-        }
-
-
-        {
-            std::lock_guard<std::mutex> lk(map_mutex);
-            auto now = std::chrono::steady_clock::now();
-            auto it = flow_to_pid.begin();
-            while (it != flow_to_pid.end()) {
-                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.last_seen);
-                if (elapsed.count() > 30) {
-                    it = flow_to_pid.erase(it);
-                } else {
-                    ++it;
-                }
-            }
         }
     }
 
