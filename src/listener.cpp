@@ -65,6 +65,79 @@ static std::unordered_map<FragmentKey, size_t, FragmentKeyHash> frag_len;
 static std::mutex frag_mutex;
 
 
+void register_existing_connections() {
+    {
+        DWORD bufLen = 0;
+        if (GetExtendedTcpTable(nullptr, &bufLen, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) != ERROR_INSUFFICIENT_BUFFER)
+            throw std::system_error(GetLastError(), std::system_category(), "GetExtendedTcpTable sizing");
+
+        std::vector<BYTE> buffer(bufLen);
+        auto tcpTable = reinterpret_cast<PMIB_TCPTABLE_OWNER_PID>(buffer.data());
+
+        if (auto err = GetExtendedTcpTable(tcpTable, &bufLen, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0); err != NO_ERROR)
+            throw std::system_error(err, std::system_category(), "GetExtendedTcpTable");
+
+        for (DWORD i = 0; i < tcpTable->dwNumEntries; ++i) {
+            const auto& row = tcpTable->table[i];
+            printf("tcp connection: %-3i: [%-15s:%-5u - %-15s:%-5u] %-30s (%-5d)\n",
+                i,
+                ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwLocalAddr)),
+                WinDivertHelperNtohs(USHORT(row.dwLocalPort)),
+                ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwRemoteAddr)),
+                WinDivertHelperNtohs(USHORT(row.dwRemotePort)),
+                pid_to_executable(row.dwOwningPid),
+                row.dwOwningPid
+            );
+            FlowKey flow_key;
+            flow_key.src_addr = WinDivertHelperNtohl((UINT32)row.dwLocalAddr);
+            flow_key.src_port = WinDivertHelperNtohs(USHORT(row.dwLocalPort));
+            flow_key.dst_addr = WinDivertHelperNtohl((UINT32)row.dwRemoteAddr);
+            flow_key.dst_port = WinDivertHelperNtohs(USHORT(row.dwRemotePort));
+            flow_key.proto = IPPROTO_TCP;
+            {
+                std::lock_guard<std::mutex> lk(map_mutex);
+                flow_to_pid[flow_key] = {(UINT32)row.dwOwningPid, std::chrono::steady_clock::now()};
+            }
+        }
+    }
+
+    {
+        DWORD bufLen = 0;
+        if (GetExtendedUdpTable(nullptr, &bufLen, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0) != ERROR_INSUFFICIENT_BUFFER)
+            throw std::system_error(GetLastError(), std::system_category(), "GetExtendedUdpTable sizing");
+
+        std::vector<BYTE> buffer(bufLen);
+        auto udpTable = reinterpret_cast<PMIB_UDPTABLE_OWNER_PID>(buffer.data());
+
+        if (auto err = GetExtendedUdpTable(udpTable, &bufLen, FALSE, AF_INET, UDP_TABLE_OWNER_PID, 0); err != NO_ERROR)
+            throw std::system_error(err, std::system_category(), "GetExtendedUdpTable");
+
+        for (DWORD i = 0; i < udpTable->dwNumEntries; ++i) {
+            const auto& row = udpTable->table[i];
+            printf("udp connection: %-3i: [%-15s:%-5u - %-15s:%-5u] %-30s (%-5d)\n",
+                i,
+                ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwLocalAddr)),
+                WinDivertHelperNtohs(USHORT(row.dwLocalPort)),
+                ipv4_to_string(WinDivertHelperHtonl((UINT32)0)),
+                WinDivertHelperNtohs(USHORT(0)),
+                pid_to_executable(row.dwOwningPid),
+                row.dwOwningPid
+            );
+            FlowKey flow_key;
+            flow_key.src_addr = WinDivertHelperNtohl((UINT32)row.dwLocalAddr);
+            flow_key.src_port = WinDivertHelperNtohs(USHORT(row.dwLocalPort));
+            flow_key.dst_addr = 0;
+            flow_key.dst_port = 0;
+            flow_key.proto = IPPROTO_UDP;
+            {
+                std::lock_guard<std::mutex> lock(map_mutex);
+                flow_to_pid[flow_key] = {(UINT32)row.dwOwningPid, std::chrono::steady_clock::now()};
+            }
+        }
+    }
+}
+
+
 void flow_layer_listener() {
     WINDIVERT_ADDRESS addr;
 
@@ -79,6 +152,8 @@ void flow_layer_listener() {
         return;
     }
 
+    register_existing_connections();
+
     while (true) {
         if (!WinDivertRecv(flow_handle, nullptr, 0, nullptr, &addr)) {
             fprintf(stderr, "WinDivertRecv(flow) failed: %s\n", recv_error_to_string(GetLastError()).c_str());
@@ -88,10 +163,10 @@ void flow_layer_listener() {
         FlowKey flow_key;
         switch (addr.Event) {
             case WINDIVERT_EVENT_FLOW_ESTABLISHED:
-                flow_key.src_addr = addr.Flow.LocalAddr[0];
-                flow_key.src_port = (uint16_t)addr.Flow.LocalPort;
-                flow_key.dst_addr = addr.Flow.RemoteAddr[0];
-                flow_key.dst_port = (uint16_t)addr.Flow.RemotePort;
+                flow_key.src_addr = WinDivertHelperNtohl(addr.Flow.LocalAddr[0]);
+                flow_key.src_port = WinDivertHelperNtohs((USHORT)addr.Flow.LocalPort);
+                flow_key.dst_addr = WinDivertHelperNtohl(addr.Flow.RemoteAddr[0]);
+                flow_key.dst_port = WinDivertHelperNtohs((USHORT)addr.Flow.RemotePort);
                 flow_key.proto = (uint8_t)addr.Flow.Protocol;
                 {
                     std::lock_guard<std::mutex> lk(map_mutex);
@@ -99,10 +174,10 @@ void flow_layer_listener() {
                 }
                 break;
             case WINDIVERT_EVENT_FLOW_DELETED:
-                flow_key.src_addr = addr.Flow.LocalAddr[0];
-                flow_key.src_port = (uint16_t)addr.Flow.LocalPort;
-                flow_key.dst_addr = addr.Flow.RemoteAddr[0];
-                flow_key.dst_port = (uint16_t)addr.Flow.RemotePort;
+                flow_key.src_addr = WinDivertHelperNtohl(addr.Flow.LocalAddr[0]);
+                flow_key.src_port = WinDivertHelperNtohs((USHORT)addr.Flow.LocalPort);
+                flow_key.dst_addr = WinDivertHelperNtohl(addr.Flow.RemoteAddr[0]);
+                flow_key.dst_port = WinDivertHelperNtohs((USHORT)addr.Flow.RemotePort);
                 flow_key.proto = (uint8_t)addr.Flow.Protocol;
                 {
                     std::lock_guard<std::mutex> lk(map_mutex);

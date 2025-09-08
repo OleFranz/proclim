@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windivert.h>
+#include <iphlpapi.h>
 
 // windivert.h (v2.2.2-A) does not include this for some reason...
 #define IPPROTO_ICMPV6 58

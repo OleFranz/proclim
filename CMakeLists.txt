@@ -12,7 +12,7 @@ file(GLOB SRC_FILES "src/*.cpp" "src/*.h")
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 
-target_link_libraries(${PROJECT_NAME} WinDivert)
+target_link_libraries(${PROJECT_NAME} WinDivert iphlpapi)
 
 set_property(TARGET ${PROJECT_NAME} PROPERTY LINK_SEARCH_END_STATIC ON)
 set_property(TARGET ${PROJECT_NAME} PROPERTY LINK_SEARCH_START_STATIC ON)
