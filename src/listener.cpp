@@ -163,10 +163,10 @@ void flow_layer_listener() {
         FlowKey flow_key;
         switch (addr.Event) {
             case WINDIVERT_EVENT_FLOW_ESTABLISHED:
-                flow_key.src_addr = WinDivertHelperNtohl(addr.Flow.LocalAddr[0]);
-                flow_key.src_port = WinDivertHelperNtohs((USHORT)addr.Flow.LocalPort);
-                flow_key.dst_addr = WinDivertHelperNtohl(addr.Flow.RemoteAddr[0]);
-                flow_key.dst_port = WinDivertHelperNtohs((USHORT)addr.Flow.RemotePort);
+                flow_key.src_addr = addr.Flow.LocalAddr[0];
+                flow_key.src_port = (USHORT)addr.Flow.LocalPort;
+                flow_key.dst_addr = addr.Flow.RemoteAddr[0];
+                flow_key.dst_port = (USHORT)addr.Flow.RemotePort;
                 flow_key.proto = (uint8_t)addr.Flow.Protocol;
                 {
                     std::lock_guard<std::mutex> lk(map_mutex);
@@ -174,10 +174,10 @@ void flow_layer_listener() {
                 }
                 break;
             case WINDIVERT_EVENT_FLOW_DELETED:
-                flow_key.src_addr = WinDivertHelperNtohl(addr.Flow.LocalAddr[0]);
-                flow_key.src_port = WinDivertHelperNtohs((USHORT)addr.Flow.LocalPort);
-                flow_key.dst_addr = WinDivertHelperNtohl(addr.Flow.RemoteAddr[0]);
-                flow_key.dst_port = WinDivertHelperNtohs((USHORT)addr.Flow.RemotePort);
+                flow_key.src_addr = addr.Flow.LocalAddr[0];
+                flow_key.src_port = (USHORT)addr.Flow.LocalPort;
+                flow_key.dst_addr = addr.Flow.RemoteAddr[0];
+                flow_key.dst_port = (USHORT)addr.Flow.RemotePort;
                 flow_key.proto = (uint8_t)addr.Flow.Protocol;
                 {
                     std::lock_guard<std::mutex> lk(map_mutex);
@@ -218,125 +218,6 @@ void network_layer_listener() {
 
         PWINDIVERT_IPHDR iphdr = nullptr;
         PWINDIVERT_IPV6HDR ipv6hdr = nullptr;
-
-        WinDivertHelperParsePacket(
-            packet,
-            packet_len,
-            &iphdr,
-            &ipv6hdr,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr
-        );
-
-        bool is_fragment = false;
-        FragmentKey fragment_key{};
-        UINT16 offset8 = 0;
-        bool more_fragments = false;
-        uint8_t* payload_ptr = nullptr;
-        UINT payload_len = 0;
-
-        if (iphdr) {
-            UINT16 fragment_offset = WINDIVERT_IPHDR_GET_FRAGOFF(iphdr); // offset
-            more_fragments = WINDIVERT_IPHDR_GET_MF(iphdr); // if true, more fragments expected
-            is_fragment = (fragment_offset != 0) || more_fragments;
-            if (is_fragment) {
-                offset8 = fragment_offset;
-                payload_ptr = (uint8_t*)iphdr + (iphdr->HdrLength * 4);
-                payload_len = WinDivertHelperNtohs(iphdr->Length) - (iphdr->HdrLength * 4);
-                fragment_key.src = WinDivertHelperNtohl(iphdr->SrcAddr);
-                fragment_key.dst = WinDivertHelperNtohl(iphdr->DstAddr);
-                fragment_key.id = WinDivertHelperNtohs(iphdr->Id);
-                fragment_key.proto = iphdr->Protocol;
-                std::lock_guard<std::mutex> lk(frag_mutex);
-                auto &buf = frag_buf[fragment_key];
-                auto &tot = frag_len[fragment_key];
-                size_t needed = (offset8 * 8) + payload_len;
-                if (buf.size() < needed) buf.resize(needed);
-                memcpy(buf.data() + offset8 * 8, payload_ptr, payload_len);
-                if (tot < needed) tot = needed;
-
-                if (!more_fragments) {
-                    UINT hdrLen = iphdr->HdrLength * 4;
-                    UINT newLen = hdrLen + (UINT)tot;
-                    std::vector<uint8_t> newPkt(newLen);
-                    memcpy(newPkt.data(), packet, hdrLen);
-                    auto* newIph = (PWINDIVERT_IPHDR)newPkt.data();
-                    newIph->Length = WinDivertHelperHtons((UINT16)newLen);
-                    WINDIVERT_IPHDR_SET_FRAGOFF(newIph, 0);
-                    WINDIVERT_IPHDR_SET_MF(newIph, 0);
-                    memcpy(newPkt.data() + hdrLen, buf.data(), tot);
-                    PWINDIVERT_TCPHDR tcphdr = nullptr;
-                    PWINDIVERT_UDPHDR udphdr = nullptr;
-                    PWINDIVERT_ICMPHDR icmphdr = nullptr;
-                    PWINDIVERT_ICMPV6HDR icmpv6hdr = nullptr;
-
-                    WinDivertHelperParsePacket(
-                        newPkt.data(),
-                        newLen,
-                        nullptr,
-                        nullptr,
-                        nullptr,
-                        &icmphdr,
-                        &icmpv6hdr,
-                        &tcphdr,
-                        &udphdr,
-                        nullptr,
-                        nullptr,
-                        nullptr,
-                        nullptr
-                    );
-
-                    FlowKey flow_key{};
-                    flow_key.src_addr = fragment_key.src;
-                    flow_key.dst_addr = fragment_key.dst;
-                    flow_key.proto = fragment_key.proto;
-                    if (tcphdr) {
-                        flow_key.src_port = WinDivertHelperNtohs(tcphdr->SrcPort);
-                        flow_key.dst_port = WinDivertHelperNtohs(tcphdr->DstPort);
-                    } else if (udphdr) {
-                        flow_key.src_port = WinDivertHelperNtohs(udphdr->SrcPort);
-                        flow_key.dst_port = WinDivertHelperNtohs(udphdr->DstPort);
-                    } else {
-                        flow_key.src_port = 0;
-                        flow_key.dst_port = 0;
-                    }
-
-                    DWORD pid = -1;
-                    {
-                        std::lock_guard<std::mutex> lk2(map_mutex);
-                        auto it = flow_to_pid.find(flow_key);
-                        if (it != flow_to_pid.end()) {
-                            pid = it->second.pid;
-                            flow_to_pid[flow_key].last_seen = std::chrono::steady_clock::now();
-                        } else {
-                            FlowKey reverse_key = flow_key;
-                            reverse_key.src_addr = flow_key.dst_addr;
-                            reverse_key.dst_addr = flow_key.src_addr;
-                            reverse_key.src_port = flow_key.dst_port;
-                            reverse_key.dst_port = flow_key.src_port;
-
-                            auto reverse_it = flow_to_pid.find(reverse_key);
-                            if (reverse_it != flow_to_pid.end()) {
-                                pid = reverse_it->second.pid;
-                                flow_to_pid[reverse_key].last_seen = std::chrono::steady_clock::now();
-                            }
-                        }
-                    }
-
-                    frag_buf.erase(fragment_key);
-                    frag_len.erase(fragment_key);
-                }
-                continue;
-            }
-        }
-
         PWINDIVERT_TCPHDR tcphdr = nullptr;
         PWINDIVERT_UDPHDR udphdr = nullptr;
         PWINDIVERT_ICMPHDR icmphdr = nullptr;
