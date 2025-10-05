@@ -15,6 +15,7 @@
 #include <vector>
 #include <mutex>
 
+#include "throttle.h"
 #include "error.h"
 #include "utils.h"
 

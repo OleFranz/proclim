@@ -210,6 +210,18 @@ void network_layer_listener() {
         return;
     }
 
+
+    // initialize throttle system
+    init_throttle_system(network_handle);
+
+    // example: limit chrome to ~1mbit/s
+    ThrottleConfig config;
+    config.executable = "chrome.exe";
+    config.bytes_per_second = 100 * 1024;
+    config.burst_size = 200 * 1024;
+    g_throttle_manager->add_throttle(config);
+
+
     while (true) {
         if (!WinDivertRecv(network_handle, packet, sizeof(packet), &packet_len, &addr)) {
             fprintf(stderr, "WinDivertRecv(network) failed: %s\n", recv_error_to_string(GetLastError()).c_str());
@@ -297,24 +309,50 @@ void network_layer_listener() {
 
         auto executable = pid_to_executable(pid);
 
-        printf(
-            "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes\n",
-            flow_to_pid.size(),
-            ipv4_to_string((UINT32)flow_key.src_addr),
-            flow_key.src_port,
-            ipv4_to_string((UINT32)flow_key.dst_addr),
-            flow_key.dst_port,
-            ip_ver,
-            proto_str,
-            executable,
-            pid,
-            packet_len
-        );
+        bool should_queue = false;
+        if (g_throttle_manager && pid != (DWORD)-1) {
+            should_queue = g_throttle_manager->should_queue_packet(pid, packet_len);
+        }
 
-        if (!WinDivertSend(network_handle, packet, packet_len, nullptr, &addr)) {
-            fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
+        if (should_queue) {
+            // queue packet for delayed sending
+            g_throttle_manager->queue_packet(packet, packet_len, addr, pid);
+
+            printf(
+                "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes [QUEUED]\n",
+                flow_to_pid.size(),
+                ipv4_to_string((UINT32)flow_key.src_addr),
+                flow_key.src_port,
+                ipv4_to_string((UINT32)flow_key.dst_addr),
+                flow_key.dst_port,
+                ip_ver,
+                proto_str,
+                executable,
+                pid,
+                packet_len
+            );
+        } else {
+            // send immediately
+            printf(
+                "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes\n",
+                flow_to_pid.size(),
+                ipv4_to_string((UINT32)flow_key.src_addr),
+                flow_key.src_port,
+                ipv4_to_string((UINT32)flow_key.dst_addr),
+                flow_key.dst_port,
+                ip_ver,
+                proto_str,
+                executable,
+                pid,
+                packet_len
+            );
+
+            if (!WinDivertSend(network_handle, packet, packet_len, nullptr, &addr)) {
+                fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
+            }
         }
     }
 
+    shutdown_throttle_system();
     WinDivertClose(network_handle);
 }
