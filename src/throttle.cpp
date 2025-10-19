@@ -216,7 +216,9 @@ void ThrottleManager::process_queue() {
 
         if (can_send) {
             // send the packet
-            WinDivertSend(network_handle, packet.data.data(), packet.data.size(), nullptr, &packet.addr);
+            if (!WinDivertSend(network_handle, packet.data.data(), packet.data.size(), nullptr, &packet.addr)) {
+                fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
+            }
 
             // calculate how long packet was queued
             auto now = std::chrono::steady_clock::now();

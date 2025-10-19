@@ -319,7 +319,7 @@ void network_layer_listener() {
             g_throttle_manager->queue_packet(packet, packet_len, addr, pid);
 
             printf(
-                "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes [QUEUED]\n",
+                "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes [Q]\n",
                 flow_to_pid.size(),
                 ipv4_to_string((UINT32)flow_key.src_addr),
                 flow_key.src_port,
