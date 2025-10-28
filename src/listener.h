@@ -16,6 +16,7 @@
 #include <mutex>
 
 #include "throttle.h"
+#include "config.h"
 #include "error.h"
 #include "utils.h"
 

@@ -79,15 +79,17 @@ void register_existing_connections() {
 
         for (DWORD i = 0; i < tcpTable->dwNumEntries; ++i) {
             const auto& row = tcpTable->table[i];
-            printf("tcp connection: %-3i: [%-15s:%-5u - %-15s:%-5u] %-30s (%-5d)\n",
-                i,
-                ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwLocalAddr)),
-                WinDivertHelperNtohs(USHORT(row.dwLocalPort)),
-                ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwRemoteAddr)),
-                WinDivertHelperNtohs(USHORT(row.dwRemotePort)),
-                pid_to_executable(row.dwOwningPid),
-                row.dwOwningPid
-            );
+            if (g_config.verbose) {
+                printf("tcp connection: %-3i: [%-15s:%-5u - %-15s:%-5u] %-30s (%-5d)\n",
+                    i,
+                    ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwLocalAddr)),
+                    WinDivertHelperNtohs(USHORT(row.dwLocalPort)),
+                    ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwRemoteAddr)),
+                    WinDivertHelperNtohs(USHORT(row.dwRemotePort)),
+                    pid_to_executable(row.dwOwningPid),
+                    row.dwOwningPid
+                );
+            }
             FlowKey flow_key;
             flow_key.src_addr = WinDivertHelperNtohl((UINT32)row.dwLocalAddr);
             flow_key.src_port = WinDivertHelperNtohs(USHORT(row.dwLocalPort));
@@ -114,15 +116,17 @@ void register_existing_connections() {
 
         for (DWORD i = 0; i < udpTable->dwNumEntries; ++i) {
             const auto& row = udpTable->table[i];
-            printf("udp connection: %-3i: [%-15s:%-5u - %-15s:%-5u] %-30s (%-5d)\n",
-                i,
-                ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwLocalAddr)),
-                WinDivertHelperNtohs(USHORT(row.dwLocalPort)),
-                ipv4_to_string(WinDivertHelperHtonl((UINT32)0)),
-                WinDivertHelperNtohs(USHORT(0)),
-                pid_to_executable(row.dwOwningPid),
-                row.dwOwningPid
-            );
+            if (g_config.verbose) {
+                printf("udp connection: %-3i: [%-15s:%-5u - %-15s:%-5u] %-30s (%-5d)\n",
+                    i,
+                    ipv4_to_string(WinDivertHelperHtonl((UINT32)row.dwLocalAddr)),
+                    WinDivertHelperNtohs(USHORT(row.dwLocalPort)),
+                    ipv4_to_string(WinDivertHelperHtonl((UINT32)0)),
+                    WinDivertHelperNtohs(USHORT(0)),
+                    pid_to_executable(row.dwOwningPid),
+                    row.dwOwningPid
+                );
+            }
             FlowKey flow_key;
             flow_key.src_addr = WinDivertHelperNtohl((UINT32)row.dwLocalAddr);
             flow_key.src_port = WinDivertHelperNtohs(USHORT(row.dwLocalPort));
@@ -213,13 +217,6 @@ void network_layer_listener() {
 
     // initialize throttle system
     init_throttle_system(network_handle);
-
-    // example: limit chrome to ~1mbit/s
-    ThrottleConfig config;
-    config.executable = "chrome.exe";
-    config.bytes_per_second = 100 * 1024;
-    config.burst_size = 200 * 1024;
-    g_throttle_manager->add_throttle(config);
 
 
     while (true) {
@@ -318,34 +315,38 @@ void network_layer_listener() {
             // queue packet for delayed sending
             g_throttle_manager->queue_packet(packet, packet_len, addr, pid);
 
-            printf(
-                "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes [Q]\n",
-                flow_to_pid.size(),
-                ipv4_to_string((UINT32)flow_key.src_addr),
-                flow_key.src_port,
-                ipv4_to_string((UINT32)flow_key.dst_addr),
-                flow_key.dst_port,
-                ip_ver,
-                proto_str,
-                executable,
-                pid,
-                packet_len
-            );
+            if (g_config.verbose) {
+                printf(
+                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes [Q]\n",
+                    flow_to_pid.size(),
+                    ipv4_to_string((UINT32)flow_key.src_addr),
+                    flow_key.src_port,
+                    ipv4_to_string((UINT32)flow_key.dst_addr),
+                    flow_key.dst_port,
+                    ip_ver,
+                    proto_str,
+                    executable,
+                    pid,
+                    packet_len
+                );
+            }
         } else {
             // send immediately
-            printf(
-                "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes\n",
-                flow_to_pid.size(),
-                ipv4_to_string((UINT32)flow_key.src_addr),
-                flow_key.src_port,
-                ipv4_to_string((UINT32)flow_key.dst_addr),
-                flow_key.dst_port,
-                ip_ver,
-                proto_str,
-                executable,
-                pid,
-                packet_len
-            );
+            if (g_config.verbose) {
+                printf(
+                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes\n",
+                    flow_to_pid.size(),
+                    ipv4_to_string((UINT32)flow_key.src_addr),
+                    flow_key.src_port,
+                    ipv4_to_string((UINT32)flow_key.dst_addr),
+                    flow_key.dst_port,
+                    ip_ver,
+                    proto_str,
+                    executable,
+                    pid,
+                    packet_len
+                );
+            }
 
             if (!WinDivertSend(network_handle, packet, packet_len, nullptr, &addr)) {
                 fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
