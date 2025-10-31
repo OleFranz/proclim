@@ -17,26 +17,13 @@ struct CLIOptions {
 
 void parse_and_apply_throttle_rule(const std::string& rule) {
     size_t first_colon = rule.find(':');
-    if (first_colon == std::string::npos) {
-        std::cerr << "Invalid throttle rule format: " << rule << std::endl;
-        std::cerr << "Expected format: 'executable:rate[:burst]' or 'pid:rate[:burst]'" << std::endl;
-        std::cerr << "  executable = executable name" << std::endl;
-        std::cerr << "  pid        = process ID number" << std::endl;
-        std::cerr << "  rate       = bandwidth limit (e.g., 1M for 1 MB/s)" << std::endl;
-        std::cerr << "  burst      = burst size (optional, defaults to rate)" << std::endl;
-        return;
-    }
 
     std::string target = rule.substr(0, first_colon);
     std::string remainder = rule.substr(first_colon + 1);
 
     size_t second_colon = remainder.find(':');
-    std::string rate_str = (second_colon == std::string::npos)
-        ? remainder
-        : remainder.substr(0, second_colon);
-    std::string burst_str = (second_colon == std::string::npos)
-        ? ""
-        : remainder.substr(second_colon + 1);
+    std::string rate_str = (second_colon == std::string::npos) ? remainder : remainder.substr(0, second_colon);
+    std::string burst_str = (second_colon == std::string::npos) ? "" : remainder.substr(second_colon + 1);
 
     auto parse_size = [](const std::string& s) -> uint64_t {
         if (s.empty()) return 0;
@@ -52,7 +39,7 @@ void parse_and_apply_throttle_rule(const std::string& rule) {
                 case 'M': multiplier = 1024 * 1024; break;
                 case 'G': multiplier = 1024 * 1024 * 1024; break;
                 default:
-                    std::cerr << "Unknown size unit: " << unit << std::endl;
+                    std::fprintf(stderr, "Unknown size unit: %c\n", unit);
                     return 0;
             }
         }
@@ -64,7 +51,7 @@ void parse_and_apply_throttle_rule(const std::string& rule) {
     uint64_t burst = burst_str.empty() ? rate : parse_size(burst_str);
 
     if (rate == 0) {
-        std::cerr << "Invalid rate in throttle rule: " << rule << std::endl;
+        std::fprintf(stderr, "Invalid rate in throttle rule: %s\n", rule.c_str());
         return;
     }
 
@@ -82,12 +69,56 @@ void parse_and_apply_throttle_rule(const std::string& rule) {
 
     if (is_pid) {
         config.pid = std::stoul(target);
-        std::cout << "Adding throttle for PID " << config.pid
-                  << ": " << rate << " bytes/s, burst " << burst << " bytes" << std::endl;
+        std::fprintf(stdout, "Adding throttle for PID %lu: %llu bytes/s, burst %llu bytes\n",
+            config.pid,
+            static_cast<unsigned long long>(rate),
+            static_cast<unsigned long long>(burst)
+        );
     } else {
-        config.executable = target;
-        std::cout << "Adding throttle for " << target
-                  << ": " << rate << " bytes/s, burst " << burst << " bytes" << std::endl;
+        if (target == "global" || target == "each") {
+            config.executable = target;
+            if (target == "each") {
+                // Set default rate/burst for all processes
+                config.bytes_per_second = rate;
+                config.burst_size = burst;
+            }
+            std::fprintf(stdout, "Adding throttle for %s: %llu bytes/s, burst %llu bytes\n",
+                target.c_str(),
+                static_cast<unsigned long long>(rate),
+                static_cast<unsigned long long>(burst)
+            );
+        } else {
+            if (target.size() < 4 || target.substr(target.size() - 4) != ".exe") {
+                switch (tolower(target[0])) {
+                    case 's':
+                    target = "system";  // limit system processes
+                    break;
+
+                    case 'u':
+                    target = "unknown";  // limit unknown processes
+                    break;
+
+                    case 'g':
+                    target = "global";  // all processes on one limiter
+                    break;
+
+                    case 'e':
+                    target = "each";  // limit all processes individually
+                    break;
+
+                    default:
+                    std::fprintf(stderr, "Unknown target: %s\n", target.c_str());
+                    return;
+                }
+            }
+
+            config.executable = target;
+            std::fprintf(stdout, "Adding throttle for %s: %llu bytes/s, burst %llu bytes\n",
+                target.c_str(),
+                static_cast<unsigned long long>(rate),
+                static_cast<unsigned long long>(burst)
+            );
+        }
     }
 
     if (g_throttle_manager) {
@@ -105,12 +136,40 @@ int main(int argc, char** argv) {
     app.add_flag("-q,--quiet", options.quiet, "Suppress non-error output");
 
     app.add_option("-t,--throttle", options.throttle_rules,
-        "Add throttle rule for a specific process or PID\n"
-        "Format: 'target:rate[:burst]'\n"
-        "  target = executable name or PID\n"
-        "  rate   = bandwidth limit in bytes/second (supports K/M/G suffixes)\n"
-        "  burst  = maximum burst size in bytes (optional, defaults to rate)")
+        "Add throttle rule\n"
+        "\n"
+        "Format: target:rate[:burst]\n"
+        "\n"
+        "Target options:\n"
+        "  <PID>       - Specific process ID\n"
+        "  <exe>       - Executable name\n"
+        "  system      - All system/kernel processes\n"
+        "  unknown     - Processes that couldn't be identified\n"
+        "  global      - All network traffic (shared limiter)\n"
+        "  each        - Each process gets individual limit\n"
+        "\n"
+        "Rate/Burst format:\n"
+        "  Number with optional suffix: K (KiB/s), M (MiB/s), G (GiB/s)")
         ->expected(0, -1);
+
+    app.get_option("--throttle")->check([](const std::string& rule) -> std::string {
+        size_t first_colon = rule.find(':');
+        if (first_colon == std::string::npos) {
+            return "Invalid format. Expected 'target:rate[:burst]'";
+        }
+
+        std::string target = rule.substr(0, first_colon);
+        if (target.empty()) {
+            return "Target cannot be empty";
+        }
+
+        std::string remainder = rule.substr(first_colon + 1);
+        if (remainder.empty()) {
+            return "Rate cannot be empty";
+        }
+
+        return "";
+    });
 
     try {
         app.parse(argc, argv);

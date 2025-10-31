@@ -25,3 +25,9 @@ proclim is a simple CLI tool that allows you to limit the network bandwidth of s
 ### How to use
 - Run the app using a terminal with administrator privileges (required for WinDivert)
 - Use command line options to specify which processes to limit and the desired bandwidth limits (`proclim --help` for details)
+
+
+## Known issues
+- The app can introduce some latency to network traffic due to packet processing
+- Some connections are not directly detected and the responsible process will be unknown until that connection is closed and reopened (for example by restarting the application/download or reloading the browser tab)
+- The app may not work correctly with other applications that modify network traffic

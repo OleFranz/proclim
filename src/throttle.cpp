@@ -13,6 +13,7 @@ RateLimiter::RateLimiter(uint64_t rate, uint64_t burst)
     , last_update(std::chrono::steady_clock::now()) {
 }
 
+// MARK: refill
 void RateLimiter::refill() {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - last_update);
@@ -24,6 +25,7 @@ void RateLimiter::refill() {
     last_update = now;
 }
 
+// MARK: try_consume
 bool RateLimiter::try_consume(uint64_t bytes) {
     std::lock_guard<std::mutex> lock(mutex);
 
@@ -37,8 +39,7 @@ bool RateLimiter::try_consume(uint64_t bytes) {
     return false;
 }
 
-
-// MARK: ThrottleManager
+// MARK: time_until_available
 std::chrono::milliseconds RateLimiter::time_until_available(uint64_t bytes) {
     std::lock_guard<std::mutex> lock(mutex);
 
@@ -55,41 +56,70 @@ std::chrono::milliseconds RateLimiter::time_until_available(uint64_t bytes) {
     return std::chrono::milliseconds(static_cast<int64_t>(seconds * 1000));
 }
 
+
+// MARK: ThrottleManager
+bool global_mode = false;
+bool each_mode = false;
+RateLimiter* global_limiter = nullptr;
+uint64_t each_rate = 0;
+uint64_t each_burst = 0;
+
 ThrottleManager::ThrottleManager(HANDLE handle)
     : network_handle(handle)
     , running(true) {
 }
 
+// MARK: add_throttle
 void ThrottleManager::add_throttle(const ThrottleConfig& config) {
     std::lock_guard<std::mutex> lock(config_mutex);
 
-    if (config.pid != 0) {
-        configs[config.pid] = config;
-        // create or update rate limiter using emplace with piecewise construction
-        auto it = limiters.find(config.pid);
-        if (it == limiters.end()) {
-            limiters.emplace(
-                std::piecewise_construct,
-                std::forward_as_tuple(config.pid),
-                std::forward_as_tuple(config.bytes_per_second, config.burst_size)
-            );
-        } else {
-            // update existing limiter by erasing and re-creating
-            limiters.erase(it);
-            limiters.emplace(
-                std::piecewise_construct,
-                std::forward_as_tuple(config.pid),
-                std::forward_as_tuple(config.bytes_per_second, config.burst_size)
-            );
-        }
+    if (config.executable == "global") {
+        global_mode = true;
+        if (global_limiter) delete global_limiter;
+        global_limiter = new RateLimiter(config.bytes_per_second, config.burst_size);
+        return;
+    }
+    if (config.executable == "each") {
+        each_mode = true;
+        each_rate = config.bytes_per_second;
+        each_burst = config.burst_size;
+        return;
     }
 
-    // also add executable based config if specified
+    if (config.pid != 0) {
+        configs[config.pid] = config;
+        // always overwrite previous limiter for PID
+        limiters.erase(config.pid);
+        limiters.emplace(
+            std::piecewise_construct,
+            std::forward_as_tuple(config.pid),
+            std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+        );
+    }
+
+    // also add/overwrite executable based config if specified
     if (!config.executable.empty()) {
         exe_configs[config.executable] = config;
+        // overwrite previous limiter for all matching PIDs
+        for (auto it = limiters.begin(); it != limiters.end(); ) {
+            DWORD pid = it->first;
+            std::string exe_name = pid_to_executable(pid);
+            if (exe_name == config.executable) {
+                it = limiters.erase(it);
+                limiters.emplace(
+                    std::piecewise_construct,
+                    std::forward_as_tuple(pid),
+                    std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+                );
+                configs[pid] = config;
+            } else {
+                ++it;
+            }
+        }
     }
 }
 
+// MARK: remove_throttle
 void ThrottleManager::remove_throttle(DWORD pid) {
     std::lock_guard<std::mutex> lock(config_mutex);
 
@@ -118,43 +148,57 @@ void ThrottleManager::remove_throttle(DWORD pid, const std::string& executable) 
     remove_throttle(executable);
 }
 
+// MARK: should_queue_packet
 bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size) {
     std::lock_guard<std::mutex> lock(config_mutex);
 
-    // check if this pid is throttled directly
-    auto it = limiters.find(pid);
-    if (it != limiters.end()) {
-        // check if we can send immediately
-        return !it->second.try_consume(packet_size);
+    bool global_throttle = false;
+    bool specific_throttle = false;
+
+    // Check global limiter first
+    if (global_mode && global_limiter) {
+        global_throttle = !global_limiter->try_consume(packet_size);
     }
 
-    // check if the executable is throttled
-    std::string exe_name = pid_to_executable(pid);
-    if (!exe_name.empty()) {
+    // check for PID specific limiter first (overrides "each" and executable)
+    auto it = limiters.find(pid);
+    if (it != limiters.end()) {
+        specific_throttle = !it->second.try_consume(packet_size);
+    } else {
+        // check for executable specific limiter
+        std::string exe_name = pid_to_executable(pid);
         auto exe_it = exe_configs.find(exe_name);
-        if (exe_it != exe_configs.end()) {
-            // check if this is a PID-specific config or general executable config
-            if (exe_it->second.pid == 0 || exe_it->second.pid == pid) {
-                // create limiter for this PID if it doesnt exist
-                auto limiter_it = limiters.find(pid);
-                if (limiter_it == limiters.end()) {
-                    limiters.emplace(
-                        std::piecewise_construct,
-                        std::forward_as_tuple(pid),
-                        std::forward_as_tuple(exe_it->second.bytes_per_second, exe_it->second.burst_size)
-                    );
-                    it = limiters.find(pid);
-                } else {
-                    it = limiter_it;
-                }
-                return !it->second.try_consume(packet_size);
-            }
+        if (!exe_name.empty() && exe_it != exe_configs.end()) {
+            // create limiter for this PID if it doesnt exist
+            limiters.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(pid),
+                std::forward_as_tuple(exe_it->second.bytes_per_second, exe_it->second.burst_size)
+            );
+            configs[pid] = exe_it->second;
+            it = limiters.find(pid);
+            specific_throttle = !it->second.try_consume(packet_size);
+        } else if (each_mode && pid != 0 && pid != (DWORD)-1) {
+            // if "each" mode, create limiter for PID if not present
+            limiters.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(pid),
+                std::forward_as_tuple(each_rate ? each_rate : 1024 * 1024, each_burst ? each_burst : (each_rate ? each_rate : 1024 * 1024))
+            );
+            it = limiters.find(pid);
+            specific_throttle = !it->second.try_consume(packet_size);
         }
     }
 
-    return false;  // not throttled
+    // if both global and specific throttles are active, queue if either says to queue
+    if (global_mode && global_limiter) {
+        return global_throttle || specific_throttle;
+    } else {
+        return specific_throttle;
+    }
 }
 
+// MARK: queue_packet
 void ThrottleManager::queue_packet(
     const char* packet,
     UINT packet_len,
@@ -171,6 +215,7 @@ void ThrottleManager::queue_packet(
     packet_queue.push(std::move(queued));
 }
 
+// MARK: process_queue
 void ThrottleManager::process_queue() {
     while (running) {
         QueuedPacket packet;
@@ -219,10 +264,6 @@ void ThrottleManager::process_queue() {
             if (!WinDivertSend(network_handle, packet.data.data(), packet.data.size(), nullptr, &packet.addr)) {
                 fprintf(stderr, "WinDivertSend(network) failed: %s\n", send_error_to_string(GetLastError()).c_str());
             }
-
-            // calculate how long packet was queued
-            auto now = std::chrono::steady_clock::now();
-            auto queued_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - packet.enqueue_time).count();
         } else {
             // put packet back in queue and wait
             {
@@ -231,14 +272,19 @@ void ThrottleManager::process_queue() {
             }
 
             // sleep for a portion of the wait time
-            auto sleep_time = std::min(wait_time, std::chrono::milliseconds(10));
+            auto sleep_time = std::min(wait_time, std::chrono::milliseconds(1));
             std::this_thread::sleep_for(sleep_time);
         }
     }
 }
 
+// MARK: stop
 void ThrottleManager::stop() {
     running = false;
+    if (global_limiter) {
+        delete global_limiter;
+        global_limiter = nullptr;
+    }
 }
 
 

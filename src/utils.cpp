@@ -7,10 +7,10 @@ using namespace std;
 
 
 const char* pid_to_executable(const DWORD pid) {
-    static char executable[MAX_PATH] = "Unknown";
+    static char executable[MAX_PATH] = "unknown";
 
     if (pid == 4) {
-        strcpy_s(executable, MAX_PATH, "Windows");
+        strcpy_s(executable, MAX_PATH, "system");
     } else if (pid != -1) {
         HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (process) {
@@ -24,14 +24,14 @@ const char* pid_to_executable(const DWORD pid) {
                     strcpy_s(executable, MAX_PATH, name);
                 }
             } else {
-                strcpy_s(executable, MAX_PATH, "Unknown");
+                strcpy_s(executable, MAX_PATH, "unknown");
             }
             CloseHandle(process);
         } else {
-            strcpy_s(executable, MAX_PATH, "Unknown");
+            strcpy_s(executable, MAX_PATH, "unknown");
         }
     } else {
-        strcpy_s(executable, MAX_PATH, "Unknown");
+        strcpy_s(executable, MAX_PATH, "unknown");
     }
 
     return executable;
