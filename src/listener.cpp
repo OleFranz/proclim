@@ -60,10 +60,6 @@ struct FragmentKeyHash {
 static std::unordered_map<FlowKey, FlowInfo, FlowKeyHash> flow_to_pid;
 static std::mutex map_mutex;
 
-static std::unordered_map<FragmentKey, std::vector<uint8_t>, FragmentKeyHash> frag_buf;
-static std::unordered_map<FragmentKey, size_t, FragmentKeyHash> frag_len;
-static std::mutex frag_mutex;
-
 
 void register_existing_connections() {
     {

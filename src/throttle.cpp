@@ -152,18 +152,11 @@ void ThrottleManager::remove_throttle(DWORD pid, const std::string& executable) 
 bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size) {
     std::lock_guard<std::mutex> lock(config_mutex);
 
-    bool global_throttle = false;
-    bool specific_throttle = false;
-
-    // Check global limiter first
-    if (global_mode && global_limiter) {
-        global_throttle = !global_limiter->try_consume(packet_size);
-    }
-
-    // check for PID specific limiter first (overrides "each" and executable)
+    // check for PID specific limiter first (overrides "each" and executable and global)
     auto it = limiters.find(pid);
     if (it != limiters.end()) {
-        specific_throttle = !it->second.try_consume(packet_size);
+        // only use the specific limiter, ignore global limiter
+        return !it->second.try_consume(packet_size);
     } else {
         // check for executable specific limiter
         std::string exe_name = pid_to_executable(pid);
@@ -177,7 +170,8 @@ bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size) {
             );
             configs[pid] = exe_it->second;
             it = limiters.find(pid);
-            specific_throttle = !it->second.try_consume(packet_size);
+            // only use the specific limiter, ignore global limiter
+            return !it->second.try_consume(packet_size);
         } else if (each_mode && pid != 0 && pid != (DWORD)-1) {
             // if "each" mode, create limiter for PID if not present
             limiters.emplace(
@@ -186,16 +180,18 @@ bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size) {
                 std::forward_as_tuple(each_rate ? each_rate : 1024 * 1024, each_burst ? each_burst : (each_rate ? each_rate : 1024 * 1024))
             );
             it = limiters.find(pid);
-            specific_throttle = !it->second.try_consume(packet_size);
+            // only use the specific limiter, ignore global limiter
+            return !it->second.try_consume(packet_size);
         }
     }
 
-    // if both global and specific throttles are active, queue if either says to queue
+    // if no specific limiter, use global limiter if enabled
     if (global_mode && global_limiter) {
-        return global_throttle || specific_throttle;
-    } else {
-        return specific_throttle;
+        return !global_limiter->try_consume(packet_size);
     }
+
+    // no limiter, do not queue
+    return false;
 }
 
 // MARK: queue_packet

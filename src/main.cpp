@@ -143,7 +143,7 @@ int main(int argc, char** argv) {
         "Target options:\n"
         "  <PID>       - Specific process ID\n"
         "  <exe>       - Executable name\n"
-        "  system      - All system/kernel processes\n"
+        "  system      - All processes\n"
         "  unknown     - Processes that couldn't be identified\n"
         "  global      - All network traffic (shared limiter)\n"
         "  each        - Each process gets individual limit\n"
