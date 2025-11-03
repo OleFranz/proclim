@@ -128,7 +128,7 @@ void parse_and_apply_throttle_rule(const std::string& rule) {
 
 
 int main(int argc, char** argv) {
-    CLI::App app{"proclim - WinDivert-based per-process network bandwidth limiter for Windows"};
+    CLI::App app{"netregu - WinDivert-based per-process network bandwidth limiter for Windows"};
 
     CLIOptions options;
 

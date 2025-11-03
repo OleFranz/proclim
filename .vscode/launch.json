@@ -2,10 +2,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug proclim",
+            "name": "Debug netregu",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/x64-debug/Debug/proclim.exe",
+            "program": "${workspaceFolder}/build/x64-debug/Debug/netregu.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
