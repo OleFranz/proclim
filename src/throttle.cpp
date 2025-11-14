@@ -172,7 +172,7 @@ bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size) {
             it = limiters.find(pid);
             // only use the specific limiter, ignore global limiter
             return !it->second.try_consume(packet_size);
-        } else if (each_mode && pid != 0 && pid != (DWORD)-1) {
+        } else if (each_mode) {
             // if "each" mode, create limiter for PID if not present
             limiters.emplace(
                 std::piecewise_construct,

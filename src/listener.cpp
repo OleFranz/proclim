@@ -303,7 +303,7 @@ void network_layer_listener() {
         auto executable = pid_to_executable(pid);
 
         bool should_queue = false;
-        if (g_throttle_manager && pid != (DWORD)-1) {
+        if (g_throttle_manager) {
             should_queue = g_throttle_manager->should_queue_packet(pid, packet_len);
         }
 
