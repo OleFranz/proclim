@@ -6,13 +6,19 @@
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/x64-debug/Debug/netregu.exe",
-            "args": [],
+            "args": "${input:programArgs}",
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
             "console": "integratedTerminal",
             "preLaunchTask": "Build Debug"
         }
-
+    ],
+    "inputs": [
+        {
+            "id": "programArgs",
+            "type": "promptString",
+            "description": "Enter program arguments"
+        }
     ]
 }

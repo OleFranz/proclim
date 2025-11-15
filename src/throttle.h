@@ -22,6 +22,7 @@ struct ThrottleConfig {
     std::string executable;     // executable name (optional)
     uint64_t bytes_per_second;  // rate limit in bytes/second
     uint64_t burst_size;        // maximum burst size in bytes
+    char mode = 's';            // 'u' = upload only, 'd' = download only, 's' = shared, 'i' = individual
 };
 
 // packet queue entry
