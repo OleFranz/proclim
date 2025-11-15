@@ -25,12 +25,20 @@ struct ThrottleConfig {
     char mode = 's';            // 'u' = upload only, 'd' = download only, 's' = shared, 'i' = individual
 };
 
+// packet direction
+enum class PacketDirection {
+    UPLOAD,
+    DOWNLOAD,
+    UNKNOWN
+};
+
 // packet queue entry
 struct QueuedPacket {
     std::vector<uint8_t> data;  // packet data
     WINDIVERT_ADDRESS addr;     // WinDivert address info
     std::chrono::steady_clock::time_point enqueue_time;
     DWORD pid;                  // associated pid
+    PacketDirection direction;  // packet direction
 };
 
 
@@ -60,9 +68,15 @@ public:
 // throttle manager
 class ThrottleManager {
 private:
+    // shared limiter (mode 's')
     std::unordered_map<DWORD, RateLimiter> limiters;
-    std::unordered_map<DWORD, ThrottleConfig> configs;
-    std::unordered_map<std::string, ThrottleConfig> exe_configs;  // executable-based configs
+    // individual limiters (mode 'i')
+    std::unordered_map<DWORD, RateLimiter> upload_limiters;
+    std::unordered_map<DWORD, RateLimiter> download_limiters;
+
+    // support multiple configs per PID for separate upload/download rules
+    std::unordered_map<DWORD, std::vector<ThrottleConfig>> configs;
+    std::unordered_map<std::string, std::vector<ThrottleConfig>> exe_configs;
     std::mutex config_mutex;
 
     std::queue<QueuedPacket> packet_queue;
@@ -83,16 +97,20 @@ public:
     void remove_throttle(DWORD pid, const std::string& executable);
 
     // check if packet should be throttled, queue if needed
-    bool should_queue_packet(DWORD pid, uint32_t packet_size);
+    bool should_queue_packet(DWORD pid, uint32_t packet_size, PacketDirection direction);
 
     // queue a packet for delayed sending
-    void queue_packet(const char* packet, UINT packet_len, const WINDIVERT_ADDRESS& addr, DWORD pid);
+    void queue_packet(const char* packet, UINT packet_len, const WINDIVERT_ADDRESS& addr, DWORD pid, PacketDirection direction);
 
     // process queued packets
     void process_queue();
 
     // stop processing
     void stop();
+
+private:
+    // helper to get limiter key for a specific config
+    std::string get_limiter_key(DWORD pid, const ThrottleConfig& config);
 };
 
 

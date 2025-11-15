@@ -267,11 +267,13 @@ void network_layer_listener() {
         }
 
         DWORD pid = -1;
+        PacketDirection direction = PacketDirection::UNKNOWN;
         {
             std::lock_guard<std::mutex> lk(map_mutex);
             auto it = flow_to_pid.find(flow_key);
             if (it != flow_to_pid.end()) {
                 pid = it->second.pid;
+                direction = PacketDirection::UPLOAD;  // packet from local process
                 flow_to_pid[flow_key].last_seen = std::chrono::steady_clock::now();
             } else {
                 FlowKey reverse_key = flow_key;
@@ -283,6 +285,7 @@ void network_layer_listener() {
                 auto reverse_it = flow_to_pid.find(reverse_key);
                 if (reverse_it != flow_to_pid.end()) {
                     pid = reverse_it->second.pid;
+                    direction = PacketDirection::DOWNLOAD;  // packet to local process
                     flow_to_pid[reverse_key].last_seen = std::chrono::steady_clock::now();
                 }
             }
@@ -304,16 +307,16 @@ void network_layer_listener() {
 
         bool should_queue = false;
         if (g_throttle_manager) {
-            should_queue = g_throttle_manager->should_queue_packet(pid, packet_len);
+            should_queue = g_throttle_manager->should_queue_packet(pid, packet_len, direction);
         }
 
         if (should_queue) {
             // queue packet for delayed sending
-            g_throttle_manager->queue_packet(packet, packet_len, addr, pid);
+            g_throttle_manager->queue_packet(packet, packet_len, addr, pid, direction);
 
             if (g_config.verbose) {
                 printf(
-                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes [Q]\n",
+                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] [%s] %-30s (%-5d) %-4u bytes [Q]\n",
                     flow_to_pid.size(),
                     ipv4_to_string((UINT32)flow_key.src_addr),
                     flow_key.src_port,
@@ -321,6 +324,7 @@ void network_layer_listener() {
                     flow_key.dst_port,
                     ip_ver,
                     proto_str,
+                    direction == PacketDirection::UPLOAD ? "UP" : direction == PacketDirection::DOWNLOAD ? "DN" : "??",
                     executable,
                     pid,
                     packet_len
@@ -330,7 +334,7 @@ void network_layer_listener() {
             // send immediately
             if (g_config.verbose) {
                 printf(
-                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] %-30s (%-5d) %-4u bytes\n",
+                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] [%s] %-30s (%-5d) %-4u bytes\n",
                     flow_to_pid.size(),
                     ipv4_to_string((UINT32)flow_key.src_addr),
                     flow_key.src_port,
@@ -338,6 +342,7 @@ void network_layer_listener() {
                     flow_key.dst_port,
                     ip_ver,
                     proto_str,
+                    direction == PacketDirection::UPLOAD ? "UP" : direction == PacketDirection::DOWNLOAD ? "DN" : "??",
                     executable,
                     pid,
                     packet_len

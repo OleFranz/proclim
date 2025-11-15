@@ -69,6 +69,11 @@ ThrottleManager::ThrottleManager(HANDLE handle)
     , running(true) {
 }
 
+// MARK: get_limiter_key
+std::string ThrottleManager::get_limiter_key(DWORD pid, const ThrottleConfig& config) {
+    return std::to_string(pid) + "_" + std::string(1, config.mode);
+}
+
 // MARK: add_throttle
 void ThrottleManager::add_throttle(const ThrottleConfig& config) {
     std::lock_guard<std::mutex> lock(config_mutex);
@@ -87,33 +92,136 @@ void ThrottleManager::add_throttle(const ThrottleConfig& config) {
     }
 
     if (config.pid != 0) {
-        configs[config.pid] = config;
-        // always overwrite previous limiter for PID
-        limiters.erase(config.pid);
-        limiters.emplace(
-            std::piecewise_construct,
-            std::forward_as_tuple(config.pid),
-            std::forward_as_tuple(config.bytes_per_second, config.burst_size)
-        );
+        // add config to the list (dont replace existing ones)
+        auto& config_list = configs[config.pid];
+
+        // check if we already have a config with this exact mode
+        bool found = false;
+        for (auto& existing : config_list) {
+            if (existing.mode == config.mode) {
+                // update existing config
+                existing = config;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            config_list.push_back(config);
+        }
+
+        // create appropriate limiter based on mode
+        std::string limiter_key = get_limiter_key(config.pid, config);
+
+        if (config.mode == 's') {
+            limiters.erase(config.pid);
+            limiters.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(config.pid),
+                std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+            );
+        } else if (config.mode == 'i') {
+            upload_limiters.erase(config.pid);
+            download_limiters.erase(config.pid);
+            upload_limiters.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(config.pid),
+                std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+            );
+            download_limiters.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(config.pid),
+                std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+            );
+        } else if (config.mode == 'u') {
+            upload_limiters.erase(config.pid);
+            upload_limiters.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(config.pid),
+                std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+            );
+        } else if (config.mode == 'd') {
+            download_limiters.erase(config.pid);
+            download_limiters.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(config.pid),
+                std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+            );
+        }
     }
 
-    // also add/overwrite executable based config if specified
+    // also add executable based config if specified
     if (!config.executable.empty()) {
-        exe_configs[config.executable] = config;
-        // overwrite previous limiter for all matching PIDs
-        for (auto it = limiters.begin(); it != limiters.end(); ) {
-            DWORD pid = it->first;
+        auto& exe_config_list = exe_configs[config.executable];
+
+        // check if we already have a config with this exact mode
+        bool found = false;
+        for (auto& existing : exe_config_list) {
+            if (existing.mode == config.mode) {
+                existing = config;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            exe_config_list.push_back(config);
+        }
+
+        // apply to all matching PIDs
+        for (auto& [pid, config_list] : configs) {
             std::string exe_name = pid_to_executable(pid);
             if (exe_name == config.executable) {
-                it = limiters.erase(it);
-                limiters.emplace(
-                    std::piecewise_construct,
-                    std::forward_as_tuple(pid),
-                    std::forward_as_tuple(config.bytes_per_second, config.burst_size)
-                );
-                configs[pid] = config;
-            } else {
-                ++it;
+                // add/update config for this PID
+                bool pid_found = false;
+                for (auto& existing : config_list) {
+                    if (existing.mode == config.mode) {
+                        existing = config;
+                        pid_found = true;
+                        break;
+                    }
+                }
+
+                if (!pid_found) {
+                    config_list.push_back(config);
+                }
+
+                // create limiter
+                if (config.mode == 's') {
+                    limiters.erase(pid);
+                    limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+                    );
+                } else if (config.mode == 'i') {
+                    upload_limiters.erase(pid);
+                    download_limiters.erase(pid);
+                    upload_limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+                    );
+                    download_limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+                    );
+                } else if (config.mode == 'u') {
+                    upload_limiters.erase(pid);
+                    upload_limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+                    );
+                } else if (config.mode == 'd') {
+                    download_limiters.erase(pid);
+                    download_limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(config.bytes_per_second, config.burst_size)
+                    );
+                }
             }
         }
     }
@@ -124,6 +232,8 @@ void ThrottleManager::remove_throttle(DWORD pid) {
     std::lock_guard<std::mutex> lock(config_mutex);
 
     limiters.erase(pid);
+    upload_limiters.erase(pid);
+    download_limiters.erase(pid);
     configs.erase(pid);
 }
 
@@ -131,12 +241,27 @@ void ThrottleManager::remove_throttle(const std::string& executable) {
     std::lock_guard<std::mutex> lock(config_mutex);
 
     exe_configs.erase(executable);
-    for (auto it = limiters.begin(); it != limiters.end();) {
+
+    // remove configs for all PIDs with this executable
+    for (auto it = configs.begin(); it != configs.end();) {
         DWORD pid = it->first;
-        auto config_it = configs.find(pid);
-        if (config_it != configs.end() && config_it->second.executable == executable) {
-            it = limiters.erase(it);
-            configs.erase(config_it);
+        auto& config_list = it->second;
+
+        // remove configs that match this executable
+        config_list.erase(
+            std::remove_if(config_list.begin(), config_list.end(),
+                [&executable](const ThrottleConfig& cfg) {
+                    return cfg.executable == executable;
+                }),
+            config_list.end()
+        );
+
+        // if no configs left, remove the PID entry and its limiters
+        if (config_list.empty()) {
+            limiters.erase(pid);
+            upload_limiters.erase(pid);
+            download_limiters.erase(pid);
+            it = configs.erase(it);
         } else {
             ++it;
         }
@@ -149,40 +274,130 @@ void ThrottleManager::remove_throttle(DWORD pid, const std::string& executable) 
 }
 
 // MARK: should_queue_packet
-bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size) {
+bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size, PacketDirection direction) {
     std::lock_guard<std::mutex> lock(config_mutex);
 
-    // check for PID specific limiter first (overrides "each" and executable and global)
-    auto it = limiters.find(pid);
-    if (it != limiters.end()) {
-        // only use the specific limiter, ignore global limiter
-        return !it->second.try_consume(packet_size);
+    // check for PID specific configs
+    auto config_it = configs.find(pid);
+    std::vector<ThrottleConfig>* active_configs = nullptr;
+
+    if (config_it != configs.end()) {
+        active_configs = &config_it->second;
     } else {
-        // check for executable specific limiter
+        // check for executable specific configs
         std::string exe_name = pid_to_executable(pid);
         auto exe_it = exe_configs.find(exe_name);
         if (!exe_name.empty() && exe_it != exe_configs.end()) {
-            // create limiter for this PID if it doesnt exist
-            limiters.emplace(
-                std::piecewise_construct,
-                std::forward_as_tuple(pid),
-                std::forward_as_tuple(exe_it->second.bytes_per_second, exe_it->second.burst_size)
-            );
+            // create configs for this PID
             configs[pid] = exe_it->second;
-            it = limiters.find(pid);
-            // only use the specific limiter, ignore global limiter
-            return !it->second.try_consume(packet_size);
+            active_configs = &configs[pid];
+
+            // create limiters for each config
+            for (const auto& cfg : *active_configs) {
+                if (cfg.mode == 's') {
+                    limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(cfg.bytes_per_second, cfg.burst_size)
+                    );
+                } else if (cfg.mode == 'i') {
+                    upload_limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(cfg.bytes_per_second, cfg.burst_size)
+                    );
+                    download_limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(cfg.bytes_per_second, cfg.burst_size)
+                    );
+                } else if (cfg.mode == 'u') {
+                    upload_limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(cfg.bytes_per_second, cfg.burst_size)
+                    );
+                } else if (cfg.mode == 'd') {
+                    download_limiters.emplace(
+                        std::piecewise_construct,
+                        std::forward_as_tuple(pid),
+                        std::forward_as_tuple(cfg.bytes_per_second, cfg.burst_size)
+                    );
+                }
+            }
         } else if (each_mode) {
-            // if "each" mode, create limiter for PID if not present
+            // create default config for "each" mode
+            ThrottleConfig default_config;
+            default_config.pid = pid;
+            default_config.bytes_per_second = each_rate ? each_rate : 1024 * 1024;
+            default_config.burst_size = each_burst ? each_burst : default_config.bytes_per_second;
+            default_config.mode = 's';
+            configs[pid] = {default_config};
+            active_configs = &configs[pid];
+
             limiters.emplace(
                 std::piecewise_construct,
                 std::forward_as_tuple(pid),
-                std::forward_as_tuple(each_rate ? each_rate : 1024 * 1024, each_burst ? each_burst : (each_rate ? each_rate : 1024 * 1024))
+                std::forward_as_tuple(default_config.bytes_per_second, default_config.burst_size)
             );
-            it = limiters.find(pid);
-            // only use the specific limiter, ignore global limiter
-            return !it->second.try_consume(packet_size);
         }
+    }
+
+    if (active_configs) {
+        // check all applicable configs for this direction
+        bool should_queue = false;
+
+        for (const auto& cfg : *active_configs) {
+            // skip configs that dont apply to this direction
+            if (cfg.mode == 'u' && direction != PacketDirection::UPLOAD) continue;
+            if (cfg.mode == 'd' && direction != PacketDirection::DOWNLOAD) continue;
+
+            // check the appropriate limiter
+            switch (cfg.mode) {
+                case 'u': // upload only
+                    {
+                        auto it = upload_limiters.find(pid);
+                        if (it != upload_limiters.end() && !it->second.try_consume(packet_size)) {
+                            should_queue = true;
+                        }
+                    }
+                    break;
+
+                case 'd': // download only
+                    {
+                        auto it = download_limiters.find(pid);
+                        if (it != download_limiters.end() && !it->second.try_consume(packet_size)) {
+                            should_queue = true;
+                        }
+                    }
+                    break;
+
+                case 's': // shared limiter
+                    {
+                        auto it = limiters.find(pid);
+                        if (it != limiters.end() && !it->second.try_consume(packet_size)) {
+                            should_queue = true;
+                        }
+                    }
+                    break;
+
+                case 'i': // individual limiters
+                    if (direction == PacketDirection::UPLOAD) {
+                        auto it = upload_limiters.find(pid);
+                        if (it != upload_limiters.end() && !it->second.try_consume(packet_size)) {
+                            should_queue = true;
+                        }
+                    } else if (direction == PacketDirection::DOWNLOAD) {
+                        auto it = download_limiters.find(pid);
+                        if (it != download_limiters.end() && !it->second.try_consume(packet_size)) {
+                            should_queue = true;
+                        }
+                    }
+                    break;
+            }
+        }
+
+        if (should_queue) return true;
     }
 
     // if no specific limiter, use global limiter if enabled
@@ -199,13 +414,15 @@ void ThrottleManager::queue_packet(
     const char* packet,
     UINT packet_len,
     const WINDIVERT_ADDRESS& addr,
-    DWORD pid
+    DWORD pid,
+    PacketDirection direction
 ) {
     QueuedPacket queued;
     queued.data.assign(packet, packet + packet_len);
     queued.addr = addr;
     queued.enqueue_time = std::chrono::steady_clock::now();
     queued.pid = pid;
+    queued.direction = direction;
 
     std::lock_guard<std::mutex> lock(queue_mutex);
     packet_queue.push(std::move(queued));
@@ -239,19 +456,95 @@ void ThrottleManager::process_queue() {
 
         {
             std::lock_guard<std::mutex> lock(config_mutex);
-            auto it = limiters.find(packet.pid);
+            auto config_it = configs.find(packet.pid);
 
-            if (it == limiters.end()) {
+            if (config_it == configs.end()) {
                 // no longer throttled, send immediately
                 can_send = true;
             } else {
-                // try to consume tokens
-                if (it->second.try_consume(packet.data.size())) {
-                    can_send = true;
-                } else {
-                    // need to wait
-                    wait_time = it->second.time_until_available(packet.data.size());
+                // check all applicable configs
+                can_send = true;  // assume we can send unless a limiter blocks it
+                std::chrono::milliseconds max_wait(0);
+
+                for (const auto& config : config_it->second) {
+                    // skip configs that dont apply to this direction
+                    if (config.mode == 'u' && packet.direction != PacketDirection::UPLOAD) continue;
+                    if (config.mode == 'd' && packet.direction != PacketDirection::DOWNLOAD) continue;
+
+                    // try to consume tokens based on mode
+                    bool this_can_send = false;
+                    std::chrono::milliseconds this_wait(0);
+
+                    switch (config.mode) {
+                        case 'u': // upload only
+                            {
+                                auto it = upload_limiters.find(packet.pid);
+                                if (it != upload_limiters.end()) {
+                                    if (it->second.try_consume(packet.data.size())) {
+                                        this_can_send = true;
+                                    } else {
+                                        this_wait = it->second.time_until_available(packet.data.size());
+                                    }
+                                }
+                            }
+                            break;
+
+                        case 'd': // download only
+                            {
+                                auto it = download_limiters.find(packet.pid);
+                                if (it != download_limiters.end()) {
+                                    if (it->second.try_consume(packet.data.size())) {
+                                        this_can_send = true;
+                                    } else {
+                                        this_wait = it->second.time_until_available(packet.data.size());
+                                    }
+                                }
+                            }
+                            break;
+
+                        case 's': // shared limiter
+                            {
+                                auto it = limiters.find(packet.pid);
+                                if (it != limiters.end()) {
+                                    if (it->second.try_consume(packet.data.size())) {
+                                        this_can_send = true;
+                                    } else {
+                                        this_wait = it->second.time_until_available(packet.data.size());
+                                    }
+                                }
+                            }
+                            break;
+
+                        case 'i': // individual limiters
+                            if (packet.direction == PacketDirection::UPLOAD) {
+                                auto it = upload_limiters.find(packet.pid);
+                                if (it != upload_limiters.end()) {
+                                    if (it->second.try_consume(packet.data.size())) {
+                                        this_can_send = true;
+                                    } else {
+                                        this_wait = it->second.time_until_available(packet.data.size());
+                                    }
+                                }
+                            } else if (packet.direction == PacketDirection::DOWNLOAD) {
+                                auto it = download_limiters.find(packet.pid);
+                                if (it != download_limiters.end()) {
+                                    if (it->second.try_consume(packet.data.size())) {
+                                        this_can_send = true;
+                                    } else {
+                                        this_wait = it->second.time_until_available(packet.data.size());
+                                    }
+                                }
+                            }
+                            break;
+                    }
+
+                    if (!this_can_send) {
+                        can_send = false;
+                        max_wait = std::max(max_wait, this_wait);
+                    }
                 }
+
+                wait_time = max_wait;
             }
         }
 
