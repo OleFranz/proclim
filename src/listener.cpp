@@ -316,7 +316,7 @@ void network_layer_listener() {
 
             if (g_config.verbose) {
                 printf(
-                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] [%s] %-30s (%-5d) %-4u bytes [Q]\n",
+                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] [%s] %-27s (%-5d) %-4u bytes [Q]\n",
                     flow_to_pid.size(),
                     ipv4_to_string((UINT32)flow_key.src_addr),
                     flow_key.src_port,
@@ -334,7 +334,7 @@ void network_layer_listener() {
             // send immediately
             if (g_config.verbose) {
                 printf(
-                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] [%s] %-30s (%-5d) %-4u bytes\n",
+                    "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] [%s] %-27s (%-5d) %-4u bytes\n",
                     flow_to_pid.size(),
                     ipv4_to_string((UINT32)flow_key.src_addr),
                     flow_key.src_port,

@@ -280,9 +280,11 @@ bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size, Packe
     // check for PID specific configs
     auto config_it = configs.find(pid);
     std::vector<ThrottleConfig>* active_configs = nullptr;
+    bool has_specific_config = false;  // track if we found a specific config
 
     if (config_it != configs.end()) {
         active_configs = &config_it->second;
+        has_specific_config = true;
     } else {
         // check for executable specific configs
         std::string exe_name = pid_to_executable(pid);
@@ -291,6 +293,7 @@ bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size, Packe
             // create configs for this PID
             configs[pid] = exe_it->second;
             active_configs = &configs[pid];
+            has_specific_config = true;
 
             // create limiters for each config
             for (const auto& cfg : *active_configs) {
@@ -334,6 +337,7 @@ bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size, Packe
             default_config.mode = 's';
             configs[pid] = {default_config};
             active_configs = &configs[pid];
+            has_specific_config = true;
 
             limiters.emplace(
                 std::piecewise_construct,
@@ -400,8 +404,8 @@ bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size, Packe
         if (should_queue) return true;
     }
 
-    // if no specific limiter, use global limiter if enabled
-    if (global_mode && global_limiter) {
+    // only use global limiter if no specific config was found
+    if (!has_specific_config && global_mode && global_limiter) {
         return !global_limiter->try_consume(packet_size);
     }
 
