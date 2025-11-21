@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
         "  unknown     - Processes that couldn't be identified\n"
         "  global      - All network traffic\n"
         "\n"
-        "Throttle mode (optional, default shared limiter):\n"
+        "Block mode (optional, default both):\n"
         "  u           - Only block upload\n"
         "  d           - Only block download\n"
         "  b           - Block both upload and download\n")
