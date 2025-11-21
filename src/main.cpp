@@ -4,7 +4,6 @@
 #include <print>
 
 #include "listener.h"
-#include "throttle.h"
 #include "config.h"
 
 
@@ -12,163 +11,9 @@ struct CLIOptions {
     bool verbose = false;
     bool quiet = false;
     std::vector<std::string> throttle_rules;
+    std::vector<std::string> block_rules;
+    std::vector<std::string> exclude_rules;
 };
-
-
-void parse_and_apply_throttle_rule(const std::string& rule) {
-    size_t first_colon = rule.find(':');
-
-    std::string target = rule.substr(0, first_colon);
-    std::string remainder = rule.substr(first_colon + 1);
-
-    size_t second_colon = remainder.find(':');
-    std::string rate_str = (second_colon == std::string::npos) ? remainder : remainder.substr(0, second_colon);
-    std::string optional_param_str = (second_colon == std::string::npos) ? "" : remainder.substr(second_colon + 1);
-
-    auto parse_size = [](const std::string& s) -> uint64_t {
-        if (s.empty()) return -1;
-
-        char* end;
-        double value = std::strtod(s.c_str(), &end);
-
-        uint64_t multiplier = 1;
-        if (*end != '\0') {
-            char unit = std::toupper(*end);
-            switch (unit) {
-                case 'K': multiplier = 1024; break;
-                case 'M': multiplier = 1024 * 1024; break;
-                case 'G': multiplier = 1024 * 1024 * 1024; break;
-                default:
-                    std::fprintf(stderr, "Unknown size unit: %c\n", unit);
-                    return -1;
-            }
-        }
-
-        return static_cast<uint64_t>(value * multiplier);
-    };
-
-    uint64_t rate = parse_size(rate_str);
-    uint64_t burst = rate;  // default burst size = rate
-    char throttle_mode = 's';  // default shared limiter
-
-    // check if optional_param_str indicates the throttle mode or burst size
-    if (!optional_param_str.empty()) {
-        switch (std::tolower(optional_param_str[0])) {
-            case 'u':
-            case 'd':
-            case 's':
-            case 'i':
-                throttle_mode = std::tolower(optional_param_str[0]);
-                break;
-            default: {
-                size_t first_colon = optional_param_str.find(':');
-                std::string burst_str = (first_colon == std::string::npos) ? optional_param_str : optional_param_str.substr(0, first_colon);
-                std::string throttle_mode_str = (first_colon == std::string::npos) ? "" : optional_param_str.substr(first_colon + 1);
-                if (!burst_str.empty()) {
-                    burst = parse_size(burst_str);
-                }
-                if (!throttle_mode_str.empty()) {
-                    throttle_mode = std::tolower(throttle_mode_str[0]);
-                }
-                break;
-            }
-        }
-    }
-
-    // negative uint is just a very large number
-    if (rate == (uint64_t)-1) {
-        std::fprintf(stderr, "Invalid rate in throttle rule: %s\n", rule.c_str());
-        return;
-    }
-    if (burst == (uint64_t)-1) {
-        std::fprintf(stderr, "Invalid burst size in throttle rule: %s\n", rule.c_str());
-        return;
-    }
-    if (throttle_mode != 'u' && throttle_mode != 'd' && throttle_mode != 's' && throttle_mode != 'i') {
-        std::fprintf(stderr, "Invalid throttle mode in throttle rule: %s\n", rule.c_str());
-        return;
-    }
-
-    ThrottleConfig config;
-    config.bytes_per_second = rate;
-    config.burst_size = burst;
-    config.mode = throttle_mode;
-
-    bool is_pid = true;
-    for (char c : target) {
-        if (!std::isdigit(c)) {
-            is_pid = false;
-            break;
-        }
-    }
-
-    if (is_pid) {
-        config.pid = std::stoul(target);
-        std::fprintf(stdout, "Adding throttle for PID %lu: %llu bytes/s, burst %llu bytes, %s\n",
-            config.pid,
-            static_cast<unsigned long long>(rate),
-            static_cast<unsigned long long>(burst),
-            (throttle_mode == 'u') ? "upload only" :
-            (throttle_mode == 'd') ? "download only" :
-            (throttle_mode == 'i') ? "individual upload/download" : "shared upload/download"
-        );
-    } else {
-        if (target == "global" || target == "each") {
-            config.executable = target;
-            if (target == "each") {
-                // set default rate/burst for all processes
-                config.bytes_per_second = rate;
-                config.burst_size = burst;
-            }
-            std::fprintf(stdout, "Adding throttle for %s: %llu bytes/s, burst %llu bytes, %s\n",
-                target.c_str(),
-                static_cast<unsigned long long>(rate),
-                static_cast<unsigned long long>(burst),
-                (throttle_mode == 'u') ? "upload only" :
-                (throttle_mode == 'd') ? "download only" :
-                (throttle_mode == 'i') ? "individual upload/download" : "shared upload/download"
-            );
-        } else {
-            if (target.size() < 4 || target.substr(target.size() - 4) != ".exe") {
-                switch (tolower(target[0])) {
-                    case 's':
-                    target = "system";  // limit system processes
-                    break;
-
-                    case 'u':
-                    target = "unknown";  // limit unknown processes
-                    break;
-
-                    case 'g':
-                    target = "global";  // all processes on one limiter
-                    break;
-
-                    case 'e':
-                    target = "each";  // limit all processes individually
-                    break;
-
-                    default:
-                    std::fprintf(stderr, "Unknown target: %s\n", target.c_str());
-                    return;
-                }
-            }
-
-            config.executable = target;
-            std::fprintf(stdout, "Adding throttle for %s: %llu bytes/s, burst %llu bytes, %s\n",
-                target.c_str(),
-                static_cast<unsigned long long>(rate),
-                static_cast<unsigned long long>(burst),
-                (throttle_mode == 'u') ? "upload only" :
-                (throttle_mode == 'd') ? "download only" :
-                (throttle_mode == 'i') ? "individual upload/download" : "shared upload/download"
-            );
-        }
-    }
-
-    if (g_throttle_manager) {
-        g_throttle_manager->add_throttle(config);
-    }
-}
 
 
 int main(int argc, char** argv) {
@@ -187,7 +32,7 @@ int main(int argc, char** argv) {
         "Target options:\n"
         "  <PID>       - Specific process ID\n"
         "  <exe>       - Executable name\n"
-        "  system      - All processes\n"
+        "  system      - All system processes\n"
         "  unknown     - Processes that couldn't be identified\n"
         "  global      - All network traffic (shared limiter)\n"
         "  each        - Each process gets individual limit\n"
@@ -203,6 +48,10 @@ int main(int argc, char** argv) {
         ->expected(0, -1);
 
     app.get_option("--throttle")->check([](const std::string& rule) -> std::string {
+        if (rule.empty()) {
+            return "Rule cannot be empty";
+        }
+
         size_t first_colon = rule.find(':');
         if (first_colon == std::string::npos) {
             return "Invalid format. Expected 'target:rate[:burst]'";
@@ -221,6 +70,63 @@ int main(int argc, char** argv) {
         return "";
     });
 
+    app.add_option("-b,--block", options.block_rules,
+        "Block traffic\n"
+        "\n"
+        "Format: target[:mode]\n"
+        "\n"
+        "Target options:\n"
+        "  <PID>       - Specific process ID\n"
+        "  <exe>       - Executable name\n"
+        "  system      - All system processes\n"
+        "  unknown     - Processes that couldn't be identified\n"
+        "  global      - All network traffic\n"
+        "\n"
+        "Throttle mode (optional, default shared limiter):\n"
+        "  u           - Only block upload\n"
+        "  d           - Only block download\n"
+        "  b           - Block both upload and download\n")
+        ->expected(0, -1);
+
+    app.get_option("--block")->check([](const std::string& rule) -> std::string {
+        if (rule.empty()) {
+            return "Rule cannot be empty";
+        }
+
+        size_t first_colon = rule.find(':');
+        std::string target;
+
+        if (first_colon == std::string::npos) {
+            target = rule;
+        } else {
+            target = rule.substr(0, first_colon);
+            if (target.empty()) {
+                return "Target cannot be empty";
+            }
+        }
+
+        return "";
+    });
+
+    app.add_option("-e,--exclude", options.exclude_rules,
+        "Exclude from all rules\n"
+        "\n"
+        "Format: target\n"
+        "\n"
+        "Target options:\n"
+        "  <PID>       - Specific process ID\n"
+        "  <exe>       - Executable name\n")
+        ->expected(0, -1);
+
+    app.get_option("--exclude")->check([](const std::string& rule) -> std::string {
+        if (rule.empty()) {
+            return "Rule cannot be empty";
+        }
+        printf("Ignoring all rules for target: %s\n", rule.c_str());
+
+        return "";
+    });
+
     try {
         app.parse(argc, argv);
     } catch (const CLI::ParseError& e) {
@@ -234,6 +140,7 @@ int main(int argc, char** argv) {
 
     g_config.verbose = options.verbose;
     g_config.quiet = options.quiet;
+    g_config.exclude_targets = options.exclude_rules;
 
 
     std::thread flow_thread(flow_layer_listener);
@@ -242,9 +149,12 @@ int main(int argc, char** argv) {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    if (!options.throttle_rules.empty()) {
+    if (!options.throttle_rules.empty() || !options.block_rules.empty()) {
         for (const auto& rule : options.throttle_rules) {
             parse_and_apply_throttle_rule(rule);
+        }
+        for (const auto& rule : options.block_rules) {
+            parse_and_apply_block_rule(rule);
         }
     } else {
         if (!options.quiet) {

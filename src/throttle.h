@@ -12,6 +12,7 @@
 #include <mutex>
 #include <queue>
 
+#include "common.h"
 #include "error.h"
 #include "utils.h"
 
@@ -23,13 +24,6 @@ struct ThrottleConfig {
     uint64_t bytes_per_second;  // rate limit in bytes/second
     uint64_t burst_size;        // maximum burst size in bytes
     char mode = 's';            // 'u' = upload only, 'd' = download only, 's' = shared, 'i' = individual
-};
-
-// packet direction
-enum class PacketDirection {
-    UPLOAD,
-    DOWNLOAD,
-    UNKNOWN
 };
 
 // packet queue entry

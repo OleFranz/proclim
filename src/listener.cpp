@@ -211,8 +211,9 @@ void network_layer_listener() {
     }
 
 
-    // initialize throttle system
+    // initialize throttle and block system
     init_throttle_system(network_handle);
+    init_block_system(network_handle);
 
 
     while (true) {
@@ -300,10 +301,34 @@ void network_layer_listener() {
             case IPPROTO_UDP: proto_str = "UDP"; break;
             case IPPROTO_ICMP: proto_str = "ICMP"; break;
             case IPPROTO_ICMPV6: proto_str = "ICMPV6"; break;
-            default: proto_str = "UNKNOWN"; break;
+            default: proto_str = "UNK"; break;
         }
 
         auto executable = pid_to_executable(pid);
+
+        if (g_block_manager) {
+            bool should_block = g_block_manager->should_block_packet(pid, packet_len, direction);
+            if (should_block) {
+                // drop the packet
+                if (g_config.verbose) {
+                    printf(
+                        "(%-3zu) [%-15s:%-5u - %-15s:%-5u] [%-2s-%-3s] [%s] %-27s (%-5d) %-4u bytes [B]\n",
+                        flow_to_pid.size(),
+                        ipv4_to_string((UINT32)flow_key.src_addr),
+                        flow_key.src_port,
+                        ipv4_to_string((UINT32)flow_key.dst_addr),
+                        flow_key.dst_port,
+                        ip_ver,
+                        proto_str,
+                        direction == PacketDirection::UPLOAD ? "UP" : direction == PacketDirection::DOWNLOAD ? "DN" : "??",
+                        executable,
+                        pid,
+                        packet_len
+                    );
+                }
+                continue;  // do not send the packet
+            }
+        }
 
         bool should_queue = false;
         if (g_throttle_manager) {

@@ -11,6 +11,7 @@ public:
 
     bool verbose = false;
     bool quiet = false;
+    std::vector<std::string> exclude_targets;
 
 private:
     Config() = default;

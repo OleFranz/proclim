@@ -17,6 +17,7 @@
 
 #include "throttle.h"
 #include "config.h"
+#include "block.h"
 #include "error.h"
 #include "utils.h"
 

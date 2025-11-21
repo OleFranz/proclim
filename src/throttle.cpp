@@ -58,11 +58,11 @@ std::chrono::milliseconds RateLimiter::time_until_available(uint64_t bytes) {
 
 
 // MARK: ThrottleManager
-bool global_mode = false;
-bool each_mode = false;
-RateLimiter* global_limiter = nullptr;
-uint64_t each_rate = 0;
-uint64_t each_burst = 0;
+static bool global_mode = false;
+static bool each_mode = false;
+static RateLimiter* global_limiter = nullptr;
+static uint64_t each_rate = 0;
+static uint64_t each_burst = 0;
 
 ThrottleManager::ThrottleManager(HANDLE handle)
     : network_handle(handle)
@@ -288,6 +288,12 @@ bool ThrottleManager::should_queue_packet(DWORD pid, uint32_t packet_size, Packe
     } else {
         // check for executable specific configs
         std::string exe_name = pid_to_executable(pid);
+        for (const auto& ex : g_config.exclude_targets) {
+            if (ex == std::to_string(pid) || ex == exe_name) {
+                return false;
+            }
+        }
+
         auto exe_it = exe_configs.find(exe_name);
         if (!exe_name.empty() && exe_it != exe_configs.end()) {
             // create configs for this PID
